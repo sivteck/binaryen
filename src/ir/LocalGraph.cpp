@@ -20,162 +20,210 @@
 #include <wasm-printing.h>
 #include <ir/find_all.h>
 #include <ir/local-graph.h>
-#include <cfg/cfg-traversal.h>
 
 namespace wasm {
 
 namespace LocalGraphInternal {
 
-// A relevant action. Supports a get, a set, or an
-// "other" which can be used for other purposes, to mark
-// their position in a block
-struct Action {
-  enum What {
-    Get = 0,
-    Set = 1
-  };
-  What what;
-  Index index; // the local index read or written
-  Expression* expr; // the expression itself
+// The algorithm we use to connect gets and sets is to first do one
+// pass to create Sources for every get. A Source is still abstract
+// at this point, and may contain both a bunch of sets and a bunch
+// of incoming Sources. We then flow values on the Source graph.
+// After doing so, each get has the sets in its Source.
 
-  Action(What what, Index index, Expression* expr) : what(what), index(index), expr(expr) {
-    if (what == Get) assert(expr->is<GetLocal>());
-    if (what == Set) assert(expr->is<SetLocal>());
-  }
+struct Source {
+  std::unordered_map<SetLocal*> sets;
+  std::unordered_map<Source*> inputs;
+  std::unordered_map<Source*> outputs;
 
-  bool isGet() { return what == Get; }
-  bool isSet() { return what == Set; }
-};
+  // TODO: add a 'used' flag, which is marked on the roots, the
+  //       sources with a set. Flow that out to see which are
+  //       needed, can save a lot of work potentially?
 
-// information about a basic block
-struct Info {
-  std::vector<Action> actions; // actions occurring in this block
-  std::vector<SetLocal*> lastSets; // for each index, the last set_local for it
-
-  void dump(Function* func) {
-    if (actions.empty()) return;
-    std::cout << "    actions:\n";
-    for (auto& action : actions) {
-      std::cout << "      " << (action.isGet() ? "get" : "set") << " " << func->getLocalName(action.index) << "\n";
-    }
-  }
-};
-
-// flow helper class. flows the gets to their sets
-
-struct Flower : public CFGWalker<Flower, Visitor<Flower>, Info> {
-  LocalGraph::GetSetses& getSetses;
-  LocalGraph::Locations& locations;
-
-  Flower(LocalGraph::GetSetses& getSetses, LocalGraph::Locations& locations, Function* func) : getSetses(getSetses), locations(locations) {
-    setFunction(func);
-    // create the CFG by walking the IR
-    CFGWalker<Flower, Visitor<Flower>, Info>::doWalkFunction(func);
-    // flow gets across blocks
-    flow(func);
-  }
-
-  BasicBlock* makeBasicBlock() {
-    auto* ret = new BasicBlock();
-    auto& lastSets = ret->contents.lastSets;
-    lastSets.resize(getFunction()->getNumLocals());
-    std::fill(lastSets.begin(), lastSets.end(), nullptr);
+  // Static creators, as we may pass nullptr as the initial
+  // value, and can't differentiate SetLocal* from Source*
+  static Source* withSet(SetLocal* set) {
+    auto* ret = new Source;
+    ret->sets.insert(set);
     return ret;
   }
 
-  // cfg traversal work
+  static Source* withInput(Source* input) {
+    auto* ret = new Source;
+    ret->addInput(input);
+    return ret;
+  }
+
+  void addInput(Source* input) {
+    if (!input) return; // unreachable code, nothing to add
+    inputs.insert(input);
+    input->outputs.insert(this);
+  }
+};
+
+struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
+  LocalGraph::GetSetses& getSetses;
+  LocalGraph::Locations& locations;
+
+  Index numLocals;
+
+  // local index => current Source. This can be nullptr if we are
+  // in unreachable control flow.
+  typedef std::vector<Source*> Sources;
+
+  // Current sources as we traverse.
+  Sources currSources;
+
+  Flower(LocalGraph::GetSetses& getSetses, LocalGraph::Locations& locations, Function* func) : getSetses(getSetses), locations(locations) {
+    numLocals = func->getNumLocals();
+    if (numLocals == 0) return;
+    // Prepare to run
+    setFunction(func);
+    // Initial state: initial values (param or zero init) for all indexes
+    for (Index i = 0; i < numLocals; i++) {
+      currSources[i] = note(Source::withSet(nullptr));
+    }
+    // Create the Source graph by walking the IR
+    ControlFlowWalker<Flower, Visitor<Flower>>::doWalkFunction(func);
+    // Flow the Sources across blocks
+    flow();
+    // Get the getSets from their Sources
+    emitGetSetses();
+  }
+
+  std::vector<std::unique_ptr<Source>> allSources;
+
+  Source* note(Source* source) {
+    allSources.push_back(std::unique_ptr<Source>(source));
+    return source;
+  }
+
+  // Connect a name - a branch target - to relevant sources.
+  std::unordered_map<Name, Sources> labelSources;
+
+  // Connect a get to its Source
+  std::unordered_map<GetLocal*, Source*> getSources;
+
+  // traversal work
+
+  static void doPreVisitControlFlow(SubType* self, Expression** currp) {
+    auto* curr = *currp;
+    if (auto* block = curr->dynCast<Block>()) {
+      // Each branch we see will add a source to the block's sources.
+      auto& blockSources = labelSources[block->name];
+      blockSources.resize(numLocals);
+      // Prepare merge Sources for all indexes. We will include the
+      // data flowing out at the end.
+      for (Index i = 0; i < numLocals; i++) {
+        blockSources[i] = note(new Source());
+      }
+    } else if (auto* loop = curr->dynCast<Loop>()) {
+      // Each branch we see will add a source to the loop's sources.
+      auto& loopSources = labelSources[loop->name];
+      loopSources.resize(numLocals);
+      // Prepare merge Sources for all indexes. We start with the input
+      // flowing in, and branches will add further sources later.
+      for (Index i = 0; i < numLocals; i++) {
+        loopSources[i] = currSources[i] = note(Source::withInput(sources[i]));
+      }
+    } else if (auto* if = curr->dynCast<If>()) {
+// TODO stacky
+    }
+  }
+
+  static void doPostVisitControlFlow(SubType* self, Expression** currp) {
+    auto* curr = *currp;
+    if (auto* block = curr->dynCast<Block>()) {
+      auto& blockSources = labelSources[block->name];
+      blockSources.resize(numLocals);
+      // Add the data flowing out at the end.
+      for (Index i = 0; i < numLocals; i++) {
+        // TODO: in all merges, may be trivial stuff we can optimize.
+        //       or maybe at the end, if a Source has just one input and
+        //       output, fuse them.
+        blockSources[i]->addInput(currSources[i]);
+        currSources[i] = blockSources[i];
+      }
+    } else if (auto* loop = curr->dynCast<Loop>()) {
+      // Branches already handled this
+    } else if (auto* if = curr->dynCast<If>()) {
+// TODO stacky
+    }
+  }
 
   static void doVisitGetLocal(Flower* self, Expression** currp) {
     auto* curr = (*currp)->cast<GetLocal>();
-     // if in unreachable code, skip
-    if (!self->currBasicBlock) return;
-    self->currBasicBlock->contents.actions.emplace_back(Action::Get, curr->index, curr);
+    self->getSources[curr] = self->currSources[curr->index];
     self->locations[curr] = currp;
   }
 
   static void doVisitSetLocal(Flower* self, Expression** currp) {
     auto* curr = (*currp)->cast<SetLocal>();
-    // if in unreachable code, skip
-    if (!self->currBasicBlock) return;
-    self->currBasicBlock->contents.actions.emplace_back(Action::Set, curr->index, curr);
-    self->currBasicBlock->contents.lastSets[curr->index] = curr;
+    self->currSources[curr->index] = self->note(Source::withSet(curr));
     self->locations[curr] = currp;
   }
 
-  void flow(Function* func) {
-    auto numLocals = func->getNumLocals();
-    std::vector<std::vector<GetLocal*>> allGets;
-    allGets.resize(numLocals);
-    std::unordered_set<BasicBlock*> seen;
-    std::vector<BasicBlock*> work;
-    for (auto& block : basicBlocks) {
-#ifdef LOCAL_GRAPH_DEBUG
-      std::cout << "basic block " << block.get() << " :\n";
-      for (auto& action : block->contents.actions) {
-        std::cout << "  action: " << action.expr << '\n';
+  void visitBreak(Break* curr) {
+    if (!curr->condition) {
+      enterUnreachableCode();
+    }
+  }
+
+  void visitSwitch(Switch* curr) {
+    enterUnreachableCode();
+  }
+
+  void visitReturn(Return* curr) {
+    enterUnreachableCode();
+  }
+
+  void visitUnreachable(Unreachable* curr) {
+    enterUnreachableCode();
+  }
+
+  void enterUnreachableCode() {
+    std::fill(currSources.begin(), currSources.end(), nullptr);
+  }
+
+  bool inUnreachableCode(Sources& sources) {
+    return sources[0] == nullptr;
+  }
+
+  bool inUnreachableCode() {
+    return inUnreachableCode(currSources);
+  }
+
+  void flow() {
+    std::unordered_set<Source*> work;
+    // The initial work is the set of sources with sets.
+    for (auto& source : allSources) {
+      if (!source->sets.empty()) {
+        work.insert(source);
       }
-      for (auto* lastSet : block->contents.lastSets) {
-        std::cout << "  last set " << lastSet << '\n';
-      }
-#endif
-      // go through the block, finding each get and adding it to its index,
-      // and seeing how sets affect that
-      auto& actions = block->contents.actions;
-      // move towards the front, handling things as we go
-      for (int i = int(actions.size()) - 1; i >= 0; i--) {
-        auto& action = actions[i];
-        auto index = action.index;
-        if (action.isGet()) {
-          allGets[index].push_back(action.expr->cast<GetLocal>());
-        } else {
-          // this set is the only set for all those gets
-          auto* set = action.expr->cast<SetLocal>();
-          auto& gets = allGets[index];
-          for (auto* get : gets) {
-            getSetses[get].insert(set);
-          }
-          gets.clear();
-        }
-      }
-      // if anything is left, we must flow it back through other blocks. we
-      // can do that for all gets as a whole, they will get the same results
-      for (Index index = 0; index < numLocals; index++) {
-        auto& gets = allGets[index];
-        if (gets.empty()) continue;
-        work.push_back(block.get());
-        seen.clear();
-        // note that we may need to revisit the later parts of this initial
-        // block, if we are in a loop, so don't mark it as seen
-        while (!work.empty()) {
-          auto* curr = work.back();
-          work.pop_back();
-          // we have gone through this block; now we must handle flowing to
-          // the inputs
-          if (curr->in.empty()) {
-            if (curr == entry) {
-              // these receive a param or zero init value
-              for (auto* get : gets) {
-                getSetses[get].insert(nullptr);
-              }
-            }
-          } else {
-            for (auto* pred : curr->in) {
-              if (seen.count(pred)) continue;
-              seen.insert(pred);
-              auto* lastSet = pred->contents.lastSets[index];
-              if (lastSet) {
-                // there is a set here, apply it, and stop the flow
-                for (auto* get : gets) {
-                  getSetses[get].insert(lastSet);
-                }
-              } else {
-                // keep on flowing
-                work.push_back(pred);
-              }
-            }
+    }
+    // Keep working while stuff is flowing.
+    while (!work.empty()) {
+      auto* source = *work.begin();
+      work.erase(work.begin());
+      // Flow the sets to the outputs.
+      for (auto* set : source->sets) {
+        for (auto* output : source->outputs) {
+          if (output->sets.find(set) == output->sets.end()) {
+            output->sets.insert(set);
+            work.insert(output);
           }
         }
-        gets.clear();
+      }
+    }
+  }
+
+  void emitGetSetses() {
+    for (auto& pair : getSources) {
+      auto* get = pair.first;
+      auto* source = pair.source;
+      auto& sets = getSetses[get];
+      for (auto* set : source->sets) {
+        sets.insert(set);
       }
     }
   }

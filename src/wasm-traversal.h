@@ -619,6 +619,10 @@ struct PostWalker : public Walker<SubType, VisitorType> {
 };
 
 // Traversal with a control-flow stack.
+//
+// You can also override the doPreVisitControlFlow and doPostVisitControlFlow
+// methods to get custom control-flow related behavior, instead of the
+// stack pushes and pops.
 
 template<typename SubType, typename VisitorType = Visitor<SubType>>
 struct ControlFlowWalker : public PostWalker<SubType, VisitorType> {
