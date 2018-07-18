@@ -50,14 +50,14 @@ struct Source {
 
   static Source* withInput(Source* input) {
     auto* ret = new Source;
-    ret->addInput(input);
+    addInput(ret, input);
     return ret;
   }
 
-  void addInput(Source* input) {
-    if (!input) return; // unreachable code, nothing to add
-    inputs.insert(input);
-    input->outputs.insert(this);
+  static void addInput(Source* main, Source* input) {
+    if (!main || !input) return; // one or both are unreachable code, nothing to add
+    main->inputs.insert(input);
+    input->outputs.insert(main);
   }
 };
 
@@ -141,7 +141,7 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
         // TODO: in all merges, may be trivial stuff we can optimize.
         //       or maybe at the end, if a Source has just one input and
         //       output, fuse them.
-        blockSources[i]->addInput(currSources[i]);
+        Source::addInput(blockSources[i], currSources[i]);
         currSources[i] = blockSources[i];
       }
     } else if (auto* loop = curr->dynCast<Loop>()) {
@@ -163,13 +163,25 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
     self->locations[curr] = currp;
   }
 
+  void handleBranch(Name name) {
+    auto& blockSources = labelSources[name];
+    for (Index i = 0; i < numLocals; i++) {
+      Source::addInput(blockSources[i], currSources[i]);
+    }
+  }
+
   void visitBreak(Break* curr) {
+    handleBranch(curr->name);
     if (!curr->condition) {
       enterUnreachableCode();
     }
   }
 
   void visitSwitch(Switch* curr) {
+    for (auto target : curr->targets) {
+      handleBranch(target);
+    }
+    handleBranch(curr->default_);
     enterUnreachableCode();
   }
 
