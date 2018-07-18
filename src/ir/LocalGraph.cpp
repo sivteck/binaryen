@@ -37,7 +37,7 @@ struct Source {
   std::unordered_map<Source*> outputs;
 
   // TODO: add a 'used' flag, which is marked on the roots, the
-  //       sources with a set. Flow that out to see which are
+  //       sources we saw had a get. Flow that out to see which are
   //       needed, can save a lot of work potentially?
 
   // Static creators, as we may pass nullptr as the initial
@@ -54,8 +54,17 @@ struct Source {
     return ret;
   }
 
-  static void addInput(Source* main, Source* input) {
-    if (!main || !input) return; // one or both are unreachable code, nothing to add
+  // Given a main source, add an input to it. One or both may
+  // be unreachable (nullptrs). If main is unreachable but not
+  // the input, we set main to the input.
+  static void addInput(Source*& main, Source* input) {
+    if (!main) {
+      main = input;
+      return;
+    }
+    if (!input) {
+      return;
+    }
     main->inputs.insert(input);
     input->outputs.insert(main);
   }
@@ -98,35 +107,36 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
     return source;
   }
 
+  // Connect a get to its Source
+  std::unordered_map<GetLocal*, Source*> getSources;
+
   // Connect a name - a branch target - to relevant sources.
   std::unordered_map<Name, Sources> labelSources;
 
-  // Connect a get to its Source
-  std::unordered_map<GetLocal*, Source*> getSources;
+  // A stack of Sources for if handling.
+  std::vector<Sources> ifStack;
 
   // traversal work
 
   static void doPreVisitControlFlow(SubType* self, Expression** currp) {
     auto* curr = *currp;
     if (auto* block = curr->dynCast<Block>()) {
-      // Each branch we see will add a source to the block's sources.
-      auto& blockSources = labelSources[block->name];
-      blockSources.resize(numLocals);
-      // Prepare merge Sources for all indexes. We will include the
-      // data flowing out at the end.
-      for (Index i = 0; i < numLocals; i++) {
-        blockSources[i] = note(new Source());
-      }
+      // The initial merge Sources at the block's end are empty. Branches
+      // and the data flowing out may add to them.
+      auto& sources = labelSources[block->name];
+      sources.resize(numLocals);
+      std::fill(sources.begin(), sources.end(), nullptr);
     } else if (auto* loop = curr->dynCast<Loop>()) {
       // Each branch we see will add a source to the loop's sources.
-      auto& loopSources = labelSources[loop->name];
-      loopSources.resize(numLocals);
+      auto& sources = labelSources[loop->name];
+      sources.resize(numLocals);
       // Prepare merge Sources for all indexes. We start with the input
       // flowing in, and branches will add further sources later.
       for (Index i = 0; i < numLocals; i++) {
-        loopSources[i] = currSources[i] = note(Source::withInput(sources[i]));
+        sources[i] = currSources[i] = note(Source::withInput(sources[i]));
       }
     } else if (auto* if = curr->dynCast<If>()) {
+// oops, if needs something in the middle too, between the if and else...
 // TODO stacky
     }
   }
@@ -134,15 +144,14 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
   static void doPostVisitControlFlow(SubType* self, Expression** currp) {
     auto* curr = *currp;
     if (auto* block = curr->dynCast<Block>()) {
-      auto& blockSources = labelSources[block->name];
-      blockSources.resize(numLocals);
+      auto& sources = labelSources[block->name];
       // Add the data flowing out at the end.
       for (Index i = 0; i < numLocals; i++) {
         // TODO: in all merges, may be trivial stuff we can optimize.
         //       or maybe at the end, if a Source has just one input and
         //       output, fuse them.
-        Source::addInput(blockSources[i], currSources[i]);
-        currSources[i] = blockSources[i];
+        Source::addInput(sources[i], currSources[i]);
+        currSources[i] = sources[i];
       }
     } else if (auto* loop = curr->dynCast<Loop>()) {
       // Branches already handled this
@@ -164,9 +173,9 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
   }
 
   void handleBranch(Name name) {
-    auto& blockSources = labelSources[name];
+    auto& sources = labelSources[name];
     for (Index i = 0; i < numLocals; i++) {
-      Source::addInput(blockSources[i], currSources[i]);
+      Source::addInput(sources[i], currSources[i]);
     }
   }
 
@@ -195,14 +204,6 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
 
   void enterUnreachableCode() {
     std::fill(currSources.begin(), currSources.end(), nullptr);
-  }
-
-  bool inUnreachableCode(Sources& sources) {
-    return sources[0] == nullptr;
-  }
-
-  bool inUnreachableCode() {
-    return inUnreachableCode(currSources);
   }
 
   void flow() {
