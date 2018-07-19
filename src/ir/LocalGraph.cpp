@@ -154,7 +154,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     // flowing in, and branches will add further sources later.
     for (Index i = 0; i < self->numLocals; i++) {
       Source* source = nullptr; // we may not need one
-      self->addInput(source, sources[i]);
+      self->addInput(source, self->currSources[i]);
       sources[i] = self->currSources[i] = source;
     }
   }
@@ -279,8 +279,8 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
       auto* source = *work.begin();
       work.erase(work.begin());
       // Flow the sets to the outputs.
-      for (auto* set : source->sets) {
-        for (auto* output : source->outputs) {
+      for (auto* output : source->outputs) {
+        for (auto* set : source->sets) {
           if (output->sets.find(set) == output->sets.end()) {
             output->sets.insert(set);
             work.insert(output);
@@ -294,16 +294,26 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     for (auto& pair : getSources) {
       auto* get = pair.first;
       auto* source = pair.second;
+      // Create the sets for the get, and prepare to add if there are any
+      auto& emitted = getSetses[get];
       if (!source) {
         // was in unreachable code, nothing to do
         continue;
       }
-      auto& emitted = getSetses[get];
       for (auto* set : source->sets) {
         emitted.insert(set);
       }
     }
   }
+
+#ifdef LOCAL_GRAPH_DEBUG
+  void dumpCurrSources(std::string title="dump") {
+    std::cout << title << '\n';
+    for (Index i = 0; i < numLocals; i++) {
+      std::cout << " currSources[" << i << "] is " << currSources[i] << '\n';
+    }
+  }
+#endif
 };
 
 } // namespace LocalGraphInternal
