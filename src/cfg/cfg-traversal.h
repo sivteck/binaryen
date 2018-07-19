@@ -36,7 +36,7 @@
 namespace wasm {
 
 template<typename SubType, typename VisitorType, typename Contents>
-struct CFGWalker : public ControlFlowWalker<SubType, VisitorType> {
+struct CFGWalker : public ControlFlowStackWalker<SubType, VisitorType> {
 
   // public interface
 
@@ -225,7 +225,7 @@ struct CFGWalker : public ControlFlowWalker<SubType, VisitorType> {
       default: {}
     }
 
-    ControlFlowWalker<SubType, VisitorType>::scan(self, currp);
+    ControlFlowStackWalker<SubType, VisitorType>::scan(self, currp);
 
     switch (curr->_id) {
       case Expression::Id::LoopId: {
@@ -241,7 +241,7 @@ struct CFGWalker : public ControlFlowWalker<SubType, VisitorType> {
 
     startBasicBlock();
     entry = currBasicBlock;
-    ControlFlowWalker<SubType, VisitorType>::doWalkFunction(func);
+    ControlFlowStackWalker<SubType, VisitorType>::doWalkFunction(func);
 
     assert(branches.size() == 0);
     assert(ifStack.size() == 0);

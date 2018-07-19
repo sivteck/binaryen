@@ -468,7 +468,7 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
     }
 
     // thread trivial jumps
-    struct JumpThreader : public ControlFlowWalker<JumpThreader> {
+    struct JumpThreader : public ControlFlowStackWalker<JumpThreader> {
       // map of all value-less breaks going to a block (and not a loop)
       std::map<Block*, std::vector<Break*>> breaksToBlock;
 

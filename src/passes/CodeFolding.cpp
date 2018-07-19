@@ -81,7 +81,7 @@ struct ExpressionMarker : public PostWalker<ExpressionMarker, UnifiedExpressionV
   }
 };
 
-struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
+struct CodeFolding : public WalkerPass<ControlFlowStackWalker<CodeFolding>> {
   bool isFunctionParallel() override { return true; }
 
   Pass* create() override { return new CodeFolding; }

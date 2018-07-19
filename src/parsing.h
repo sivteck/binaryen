@@ -274,7 +274,7 @@ struct UniqueNameMapper {
 
   // Given an expression, ensures all names are unique
   static void uniquify(Expression* curr) {
-    struct Walker : public ControlFlowWalker<Walker, Visitor<Walker>> {
+    struct Walker : public ControlFlowStackWalker<Walker, Visitor<Walker>> {
       UniqueNameMapper mapper;
 
       static void doPreVisitControlFlow(Walker* self, Expression** currp) {

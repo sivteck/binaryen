@@ -136,9 +136,12 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
         sources[i] = currSources[i] = note(Source::withInput(sources[i]));
       }
     } else if (auto* if = curr->dynCast<If>()) {
-// oops, if needs something in the middle too, between the if and else...
 // TODO stacky
     }
+  }
+
+  static void doVisitIfElse(SubType* self, Expression** currp) {
+    auto* iff = *currp->cast<If>();
   }
 
   static void doPostVisitControlFlow(SubType* self, Expression** currp) {
