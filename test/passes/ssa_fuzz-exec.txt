@@ -16,9 +16,8 @@
   (local $6 i32)
   (local $7 i32)
   (local $8 i32)
-  (local $9 f64)
+  (local $9 i32)
   (local $10 i32)
-  (local $11 i32)
   (block $label$1 (result i32)
    (if (result i32)
     (i32.const 0)
@@ -29,7 +28,7 @@
        (block $label$7
         (set_local $4
          (if (result i32)
-          (get_local $10)
+          (get_local $9)
           (select
            (loop $label$9 (result i32)
             (if (result i32)
@@ -60,13 +59,13 @@
             (if
              (i32.const 0)
              (return
-              (get_local $11)
+              (get_local $10)
              )
             )
             (if
              (tee_local $6
               (tee_local $7
-               (tee_local $11
+               (tee_local $10
                 (i32.const 0)
                )
               )
@@ -80,8 +79,8 @@
             (br_if $label$15
              (i32.eqz
               (tee_local $8
-               (tee_local $11
-                (tee_local $10
+               (tee_local $10
+                (tee_local $9
                  (i32.const 129)
                 )
                )
@@ -99,7 +98,7 @@
          (get_local $6)
          (unreachable)
          (block $label$25 (result i32)
-          (set_local $9
+          (set_local $var$3
            (block $label$26 (result f64)
             (drop
              (br_if $label$4
