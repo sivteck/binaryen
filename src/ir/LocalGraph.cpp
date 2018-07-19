@@ -1,3 +1,4 @@
+#define LOCAL_GRAPH_DEBUG
 /*
  * Copyright 2017 WebAssembly Community Group participants
  *
@@ -67,20 +68,31 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     // Prepare to run
     setFunction(func);
     // Initial state: initial values (param or zero init) for all indexes
+    currSources.resize(numLocals);
     for (Index i = 0; i < numLocals; i++) {
       currSources[i] = note(new Source(nullptr));
     }
     // Create the Source graph by walking the IR
+#ifdef LOCAL_GRAPH_DEBUG
+    std::cout << "LocalGraph: walk " << func->name << '\n';
+#endif
     PostWalker<GetSetConnector>::doWalkFunction(func);
     // Flow the Sources across blocks
+#ifdef LOCAL_GRAPH_DEBUG
+    std::cout << "LocalGraph: flow\n";
+#endif
     flow();
     // Get the getSets from their Sources
+#ifdef LOCAL_GRAPH_DEBUG
+    std::cout << "LocalGraph: emit\n";
+#endif
     emitGetSetses();
   }
 
   std::vector<std::unique_ptr<Source>> allSources;
 
   Source* note(Source* source) {
+    assert(source);
     allSources.push_back(std::unique_ptr<Source>(source));
     return source;
   }
@@ -109,6 +121,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
 
   static void doPreVisitBlock(GetSetConnector* self, Expression** currp) {
     auto* curr = (*currp)->dynCast<Block>();
+    if (!curr->name.is()) return;
     // The initial merge Sources at the block's end are empty. Branches
     // and the data flowing out may add to them.
     auto& sources = self->labelSources[curr->name];
@@ -118,6 +131,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
 
   static void doVisitBlock(GetSetConnector* self, Expression** currp) {
     auto* curr = (*currp)->dynCast<Block>();
+    if (!curr->name.is()) return;
     auto& sources = self->labelSources[curr->name];
     // Add the data flowing out at the end.
     for (Index i = 0; i < self->numLocals; i++) {
@@ -132,6 +146,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
 
   static void doPreVisitLoop(GetSetConnector* self, Expression** currp) {
     auto* curr = (*currp)->dynCast<Loop>();
+    if (!curr->name.is()) return;
     // Each branch we see will add a source to the loop's sources.
     auto& sources = self->labelSources[curr->name];
     sources.resize(self->numLocals);
