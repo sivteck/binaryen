@@ -618,66 +618,6 @@ struct PostWalker : public Walker<SubType, VisitorType> {
   }
 };
 
-// A walker with additional overrides for control flow relevant stuff. You
-// can fill in
-meh, we want a ControlFlowContainer walker. A container is a block
-body, loop body, or an arm of an if
-//  * doPreVisitControlFlow - called before block, if, loop
-//  * doVisitIfElse - called when we reach the space between an if's
-//                    true and false branches, for an if with an else.
-//                    this is called with the if as a parameter.
-//  * doPostVisitControlFlow - called after block, if loop
-
-template<typename SubType, typename VisitorType = Visitor<SubType>>
-struct ControlFlowWalker : public PostWalker<SubType, VisitorType> {
-  ControlFlowWalker() {}
-
-  static void doPreVisitControlFlow(SubType* self, Expression** currp) {
-  }
-
-  static void doVisitIfElse(SubType* self, Expression** currp) {
-  }
-
-  static void doPostVisitControlFlow(SubType* self, Expression** currp) {
-  }
-
-  static void scan(SubType* self, Expression** currp) {
-    auto* curr = *currp;
-
-    switch (curr->_id) {
-      case Expression::Id::BlockId:
-      case Expression::Id::IfId:
-      case Expression::Id::LoopId: {
-        self->pushTask(SubType::doPostVisitControlFlow, currp);
-        break;
-      }
-      default: {}
-    }
-
-    if (auto* iff = curr->dynCast<If>()) {
-      self->pushTask(SubType::doVisitIf, currp);
-      if (iff->ifFalse) {
-        self->pushTask(SubType::scan, &iff->ifFalse);
-        self->pushTask(SubType::doVisitIfElse, &iff);
-      }
-      self->pushTask(SubType::scan, &iff->ifTrue);
-      self->pushTask(SubType::scan, &iff->condition);
-    } else {
-      PostWalker<SubType, VisitorType>::scan(self, currp);
-    }
-
-    switch (curr->_id) {
-      case Expression::Id::BlockId:
-      case Expression::Id::IfId:
-      case Expression::Id::LoopId: {
-        self->pushTask(SubType::doPreVisitControlFlow, currp);
-        break;
-      }
-      default: {}
-    }
-  }
-};
-
 // Traversal with a control-flow stack.
 
 template<typename SubType, typename VisitorType = Visitor<SubType>>

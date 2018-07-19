@@ -47,7 +47,7 @@ struct Source {
   }
 };
 
-struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
+struct Flower : public PostWalker<Flower, Visitor<Flower>> {
   LocalGraph::GetSetses& getSetses;
   LocalGraph::Locations& locations;
 
@@ -70,7 +70,7 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
       currSources[i] = note(new Source(nullptr));
     }
     // Create the Source graph by walking the IR
-    ControlFlowWalker<Flower, Visitor<Flower>>::doWalkFunction(func);
+    PostWalker<Flower, Visitor<Flower>>::doWalkFunction(func);
     // Flow the Sources across blocks
     flow();
     // Get the getSets from their Sources
@@ -167,6 +167,41 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
     auto* curr = (*currp)->cast<SetLocal>();
     self->currSources[curr->index] = self->note(new Source(curr));
     self->locations[curr] = currp;
+  }
+
+  static void scan(SubType* self, Expression** currp) {
+    auto* curr = *currp;
+
+    switch (curr->_id) {
+      case Expression::Id::BlockId: {
+        self->pushTask(SubType::doVisitBlock, currp);
+        auto& list = curr->cast<Block>()->list;
+        for (int i = int(list.size()) - 1; i >= 0; i--) {
+          self->pushTask(SubType::scan, &list[i]);
+        }
+        self->pushTask(SubType::doPreVisitBlock, currp);
+        break;
+      }
+      case Expression::Id::IfId: {
+        self->pushTask(SubType::doVisitIf, currp);
+        if (iff->ifFalse) {
+          self->pushTask(SubType::scan, &iff->ifFalse);
+          self->pushTask(SubType::doPreVisitIfElse, &iff);
+        }
+        self->pushTask(SubType::scan, &iff->ifTrue);
+        self->pushTask(SubType::doPreVisitIfTrue, currp);
+        self->pushTask(SubType::scan, &iff->condition);
+      }
+      case Expression::Id::LoopId: {
+        self->pushTask(SubType::doVisitLoop, currp);
+        self->pushTask(SubType::scan, &curr->cast<Loop>()->body);
+        self->pushTask(SubType::doPreVisitLoop, currp);
+        break;
+      }
+      default: {
+        PostWalker<SubType, VisitorType>::scan(self, currp);
+      }
+    }
   }
 
   void handleBranch(Name name) {
