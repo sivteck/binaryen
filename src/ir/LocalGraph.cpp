@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#include <iterator>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <wasm-builder.h>
 #include <wasm-printing.h>
@@ -32,9 +33,9 @@ namespace LocalGraphInternal {
 // After doing so, each get has the sets in its Source.
 
 struct Source {
-  std::unordered_map<SetLocal*> sets;
-  std::unordered_map<Source*> inputs;
-  std::unordered_map<Source*> outputs;
+  std::unordered_set<SetLocal*> sets;
+  std::unordered_set<Source*> inputs;
+  std::unordered_set<Source*> outputs;
 
   // TODO: add a 'used' flag, which is marked on the roots, the
   //       sources we saw had a get. Flow that out to see which are
@@ -47,7 +48,7 @@ struct Source {
   }
 };
 
-struct Flower : public PostWalker<Flower, Visitor<Flower>> {
+struct GetSetConnector : public PostWalker<GetSetConnector> {
   LocalGraph::GetSetses& getSetses;
   LocalGraph::Locations& locations;
 
@@ -60,7 +61,7 @@ struct Flower : public PostWalker<Flower, Visitor<Flower>> {
   // Current sources as we traverse.
   Sources currSources;
 
-  Flower(LocalGraph::GetSetses& getSetses, LocalGraph::Locations& locations, Function* func) : getSetses(getSetses), locations(locations) {
+  GetSetConnector(LocalGraph::GetSetses& getSetses, LocalGraph::Locations& locations, Function* func) : getSetses(getSetses), locations(locations) {
     numLocals = func->getNumLocals();
     if (numLocals == 0) return;
     // Prepare to run
@@ -70,7 +71,7 @@ struct Flower : public PostWalker<Flower, Visitor<Flower>> {
       currSources[i] = note(new Source(nullptr));
     }
     // Create the Source graph by walking the IR
-    PostWalker<Flower, Visitor<Flower>>::doWalkFunction(func);
+    PostWalker<GetSetConnector>::doWalkFunction(func);
     // Flow the Sources across blocks
     flow();
     // Get the getSets from their Sources
@@ -104,102 +105,113 @@ struct Flower : public PostWalker<Flower, Visitor<Flower>> {
   // Connect a name - a branch target - to relevant sources.
   std::unordered_map<Name, Sources> labelSources;
 
-  // A stack of Sources for if handling.
-  std::vector<Sources> ifStack;
-
   // traversal work
 
-  static void doPreVisitControlFlow(SubType* self, Expression** currp) {
-    auto* curr = *currp;
-    if (auto* block = curr->dynCast<Block>()) {
-      // The initial merge Sources at the block's end are empty. Branches
-      // and the data flowing out may add to them.
-      auto& sources = labelSources[block->name];
-      sources.resize(numLocals);
-      std::fill(sources.begin(), sources.end(), nullptr);
-    } else if (auto* loop = curr->dynCast<Loop>()) {
-      // Each branch we see will add a source to the loop's sources.
-      auto& sources = labelSources[loop->name];
-      sources.resize(numLocals);
-      // Prepare merge Sources for all indexes. We start with the input
-      // flowing in, and branches will add further sources later.
-      for (Index i = 0; i < numLocals; i++) {
-        auto* source = note(new Source());
-        addInput(source, sources[i]);
-        sources[i] = currSources[i] = sources[i];
-      }
-    } else if (auto* if = curr->dynCast<If>()) {
-// TODO stacky
+  static void doPreVisitBlock(GetSetConnector* self, Expression** currp) {
+    auto* curr = (*currp)->dynCast<Block>();
+    // The initial merge Sources at the block's end are empty. Branches
+    // and the data flowing out may add to them.
+    auto& sources = self->labelSources[curr->name];
+    sources.resize(self->numLocals);
+    std::fill(sources.begin(), sources.end(), nullptr);
+  }
+
+  static void doVisitBlock(GetSetConnector* self, Expression** currp) {
+    auto* curr = (*currp)->dynCast<Block>();
+    auto& sources = self->labelSources[curr->name];
+    // Add the data flowing out at the end.
+    for (Index i = 0; i < self->numLocals; i++) {
+      // TODO: in all merges, may be trivial stuff we can optimize.
+      //       or maybe at the end, if a Source has just one input and
+      //       output, fuse them - compact the graph before flowing it.
+      //       that would also be the time to dce the graph
+      self->addInput(sources[i], self->currSources[i]);
+      self->currSources[i] = sources[i];
     }
   }
 
-  static void doVisitIfElse(SubType* self, Expression** currp) {
-    auto* iff = *currp->cast<If>();
-  }
-
-  static void doPostVisitControlFlow(SubType* self, Expression** currp) {
-    auto* curr = *currp;
-    if (auto* block = curr->dynCast<Block>()) {
-      auto& sources = labelSources[block->name];
-      // Add the data flowing out at the end.
-      for (Index i = 0; i < numLocals; i++) {
-        // TODO: in all merges, may be trivial stuff we can optimize.
-        //       or maybe at the end, if a Source has just one input and
-        //       output, fuse them - compact the graph before flowing it.
-        //       that would also be the time to dce the graph
-        addInput(sources[i], currSources[i]);
-        currSources[i] = sources[i];
-      }
-    } else if (auto* loop = curr->dynCast<Loop>()) {
-      // Branches already handled this
-    } else if (auto* if = curr->dynCast<If>()) {
-// TODO stacky
+  static void doPreVisitLoop(GetSetConnector* self, Expression** currp) {
+    auto* curr = (*currp)->dynCast<Loop>();
+    // Each branch we see will add a source to the loop's sources.
+    auto& sources = self->labelSources[curr->name];
+    sources.resize(self->numLocals);
+    // Prepare merge Sources for all indexes. We start with the input
+    // flowing in, and branches will add further sources later.
+    for (Index i = 0; i < self->numLocals; i++) {
+      Source* source = nullptr; // we may not need one
+      self->addInput(source, sources[i]);
+      sources[i] = self->currSources[i] = source;
     }
   }
 
-  static void doVisitGetLocal(Flower* self, Expression** currp) {
+  std::vector<Sources> ifStack;
+
+  static void doPreVisitIfTrue(GetSetConnector* self, Expression** currp) {
+    self->ifStack.push_back(self->currSources); // needed for merge later
+  }
+
+  static void doPreVisitIfFalse(GetSetConnector* self, Expression** currp) {
+    auto preIfTrue = self->ifStack.back();
+    self->ifStack.back() = self->currSources;
+    self->currSources = preIfTrue;
+  }
+
+  static void doVisitIf(GetSetConnector* self, Expression** currp) {
+    // The if stack contains what we need to merge with the current
+    // data - if no else, it contains the sources if we skip the
+    // if body, and if there is an else, it contains the if true's
+    // output.
+    auto& sources = self->ifStack.back();
+    for (Index i = 0; i < self->numLocals; i++) {
+      self->addInput(self->currSources[i], sources[i]);
+    }
+    self->ifStack.pop_back();
+  }
+
+  static void doVisitGetLocal(GetSetConnector* self, Expression** currp) {
     auto* curr = (*currp)->cast<GetLocal>();
     self->getSources[curr] = self->currSources[curr->index];
     self->locations[curr] = currp;
   }
 
-  static void doVisitSetLocal(Flower* self, Expression** currp) {
+  static void doVisitSetLocal(GetSetConnector* self, Expression** currp) {
     auto* curr = (*currp)->cast<SetLocal>();
     self->currSources[curr->index] = self->note(new Source(curr));
     self->locations[curr] = currp;
   }
 
-  static void scan(SubType* self, Expression** currp) {
+  static void scan(GetSetConnector* self, Expression** currp) {
     auto* curr = *currp;
 
     switch (curr->_id) {
       case Expression::Id::BlockId: {
-        self->pushTask(SubType::doVisitBlock, currp);
+        self->pushTask(GetSetConnector::doVisitBlock, currp);
         auto& list = curr->cast<Block>()->list;
         for (int i = int(list.size()) - 1; i >= 0; i--) {
-          self->pushTask(SubType::scan, &list[i]);
+          self->pushTask(GetSetConnector::scan, &list[i]);
         }
-        self->pushTask(SubType::doPreVisitBlock, currp);
+        self->pushTask(GetSetConnector::doPreVisitBlock, currp);
         break;
       }
       case Expression::Id::IfId: {
-        self->pushTask(SubType::doVisitIf, currp);
+        auto* iff = curr->cast<If>();
+        self->pushTask(GetSetConnector::doVisitIf, currp);
         if (iff->ifFalse) {
-          self->pushTask(SubType::scan, &iff->ifFalse);
-          self->pushTask(SubType::doPreVisitIfElse, &iff);
+          self->pushTask(GetSetConnector::scan, &iff->ifFalse);
+          self->pushTask(GetSetConnector::doPreVisitIfFalse, currp);
         }
-        self->pushTask(SubType::scan, &iff->ifTrue);
-        self->pushTask(SubType::doPreVisitIfTrue, currp);
-        self->pushTask(SubType::scan, &iff->condition);
+        self->pushTask(GetSetConnector::scan, &iff->ifTrue);
+        self->pushTask(GetSetConnector::doPreVisitIfTrue, currp);
+        self->pushTask(GetSetConnector::scan, &iff->condition);
       }
       case Expression::Id::LoopId: {
-        self->pushTask(SubType::doVisitLoop, currp);
-        self->pushTask(SubType::scan, &curr->cast<Loop>()->body);
-        self->pushTask(SubType::doPreVisitLoop, currp);
+        self->pushTask(GetSetConnector::doVisitLoop, currp);
+        self->pushTask(GetSetConnector::scan, &curr->cast<Loop>()->body);
+        self->pushTask(GetSetConnector::doPreVisitLoop, currp);
         break;
       }
       default: {
-        PostWalker<SubType, VisitorType>::scan(self, currp);
+        PostWalker<GetSetConnector>::scan(self, currp);
       }
     }
   }
@@ -243,7 +255,7 @@ struct Flower : public PostWalker<Flower, Visitor<Flower>> {
     // The initial work is the set of sources with sets.
     for (auto& source : allSources) {
       if (!source->sets.empty()) {
-        work.insert(source);
+        work.insert(source.get());
       }
     }
     // Keep working while stuff is flowing.
@@ -265,7 +277,7 @@ struct Flower : public PostWalker<Flower, Visitor<Flower>> {
   void emitGetSetses() {
     for (auto& pair : getSources) {
       auto* get = pair.first;
-      auto* source = pair.source;
+      auto* source = pair.second;
       auto& sets = getSetses[get];
       for (auto* set : source->sets) {
         sets.insert(set);
@@ -279,7 +291,7 @@ struct Flower : public PostWalker<Flower, Visitor<Flower>> {
 // LocalGraph implementation
 
 LocalGraph::LocalGraph(Function* func) {
-  LocalGraphInternal::Flower flower(getSetses, locations, func);
+  LocalGraphInternal::GetSetConnector getSetConnector(getSetses, locations, func);
 
 #ifdef LOCAL_GRAPH_DEBUG
   std::cout << "LocalGraph::dump\n";
