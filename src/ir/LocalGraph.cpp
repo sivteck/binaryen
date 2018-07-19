@@ -1,4 +1,4 @@
-#define LOCAL_GRAPH_DEBUG
+//#define LOCAL_GRAPH_DEBUG
 /*
  * Copyright 2017 WebAssembly Community Group participants
  *
@@ -294,9 +294,13 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     for (auto& pair : getSources) {
       auto* get = pair.first;
       auto* source = pair.second;
-      auto& sets = getSetses[get];
+      if (!source) {
+        // was in unreachable code, nothing to do
+        continue;
+      }
+      auto& emitted = getSetses[get];
       for (auto* set : source->sets) {
-        sets.insert(set);
+        emitted.insert(set);
       }
     }
   }
