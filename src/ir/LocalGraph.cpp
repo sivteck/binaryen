@@ -218,6 +218,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
         self->pushTask(GetSetConnector::scan, &iff->ifTrue);
         self->pushTask(GetSetConnector::doPreVisitIfTrue, currp);
         self->pushTask(GetSetConnector::scan, &iff->condition);
+        break;
       }
       case Expression::Id::LoopId: {
         self->pushTask(GetSetConnector::doVisitLoop, currp);
@@ -309,7 +310,7 @@ LocalGraph::LocalGraph(Function* func) {
   LocalGraphInternal::GetSetConnector getSetConnector(getSetses, locations, func);
 
 #ifdef LOCAL_GRAPH_DEBUG
-  std::cout << "LocalGraph::dump\n";
+  std::cout << "LocalGraph: dump\n";
   for (auto& pair : getSetses) {
     auto* get = pair.first;
     auto& sets = pair.second;
