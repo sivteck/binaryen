@@ -178,7 +178,10 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     // output.
     auto& sources = self->ifStack.back();
     for (Index i = 0; i < self->numLocals; i++) {
-      self->addInput(self->currSources[i], sources[i]);
+      Source* source = nullptr; // we may not need one
+      self->addInput(source, sources[i]);
+      self->addInput(source, self->currSources[i]);
+      self->currSources[i] = source;
     }
     self->ifStack.pop_back();
   }
