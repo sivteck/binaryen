@@ -40,33 +40,10 @@ struct Source {
   //       sources we saw had a get. Flow that out to see which are
   //       needed, can save a lot of work potentially?
 
-  // Static creators, as we may pass nullptr as the initial
-  // value, and can't differentiate SetLocal* from Source*
-  static Source* withSet(SetLocal* set) {
-    auto* ret = new Source;
-    ret->sets.insert(set);
-    return ret;
-  }
+  Source() {}
 
-  static Source* withInput(Source* input) {
-    auto* ret = new Source;
-    addInput(ret, input);
-    return ret;
-  }
-
-  // Given a main source, add an input to it. One or both may
-  // be unreachable (nullptrs). If main is unreachable but not
-  // the input, we set main to the input.
-  static void addInput(Source*& main, Source* input) {
-    if (!main) {
-      main = input;
-      return;
-    }
-    if (!input) {
-      return;
-    }
-    main->inputs.insert(input);
-    input->outputs.insert(main);
+  Source(SetLocal* set) {
+    sets.insert(set);
   }
 };
 
@@ -90,7 +67,7 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
     setFunction(func);
     // Initial state: initial values (param or zero init) for all indexes
     for (Index i = 0; i < numLocals; i++) {
-      currSources[i] = note(Source::withSet(nullptr));
+      currSources[i] = note(new Source(nullptr));
     }
     // Create the Source graph by walking the IR
     ControlFlowWalker<Flower, Visitor<Flower>>::doWalkFunction(func);
@@ -105,6 +82,20 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
   Source* note(Source* source) {
     allSources.push_back(std::unique_ptr<Source>(source));
     return source;
+  }
+
+  // Given a main source, add an input to it. One or both may
+  // be unreachable (nullptrs). If main is unreachable but not
+  // the input, we create main so that we can connect them.
+  void addInput(Source*& main, Source* input) {
+    if (!input) {
+      return;
+    }
+    if (!main) {
+      main = note(new Source());
+    }
+    main->inputs.insert(input);
+    input->outputs.insert(main);
   }
 
   // Connect a get to its Source
@@ -133,7 +124,9 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
       // Prepare merge Sources for all indexes. We start with the input
       // flowing in, and branches will add further sources later.
       for (Index i = 0; i < numLocals; i++) {
-        sources[i] = currSources[i] = note(Source::withInput(sources[i]));
+        auto* source = note(new Source());
+        addInput(source, sources[i]);
+        sources[i] = currSources[i] = sources[i];
       }
     } else if (auto* if = curr->dynCast<If>()) {
 // TODO stacky
@@ -152,8 +145,9 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
       for (Index i = 0; i < numLocals; i++) {
         // TODO: in all merges, may be trivial stuff we can optimize.
         //       or maybe at the end, if a Source has just one input and
-        //       output, fuse them.
-        Source::addInput(sources[i], currSources[i]);
+        //       output, fuse them - compact the graph before flowing it.
+        //       that would also be the time to dce the graph
+        addInput(sources[i], currSources[i]);
         currSources[i] = sources[i];
       }
     } else if (auto* loop = curr->dynCast<Loop>()) {
@@ -171,14 +165,14 @@ struct Flower : public ControlFlowWalker<Flower, Visitor<Flower>> {
 
   static void doVisitSetLocal(Flower* self, Expression** currp) {
     auto* curr = (*currp)->cast<SetLocal>();
-    self->currSources[curr->index] = self->note(Source::withSet(curr));
+    self->currSources[curr->index] = self->note(new Source(curr));
     self->locations[curr] = currp;
   }
 
   void handleBranch(Name name) {
     auto& sources = labelSources[name];
     for (Index i = 0; i < numLocals; i++) {
-      Source::addInput(sources[i], currSources[i]);
+      addInput(sources[i], currSources[i]);
     }
   }
 

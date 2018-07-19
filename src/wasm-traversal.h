@@ -620,8 +620,8 @@ struct PostWalker : public Walker<SubType, VisitorType> {
 
 // A walker with additional overrides for control flow relevant stuff. You
 // can fill in
-// meh, we want a ControlFlowContainer walker. A container is a block
-// body, loop body, or an arm of an if
+meh, we want a ControlFlowContainer walker. A container is a block
+body, loop body, or an arm of an if
 //  * doPreVisitControlFlow - called before block, if, loop
 //  * doVisitIfElse - called when we reach the space between an if's
 //                    true and false branches, for an if with an else.
