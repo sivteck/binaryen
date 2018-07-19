@@ -187,12 +187,14 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
   }
 
   static void doVisitGetLocal(GetSetConnector* self, Expression** currp) {
+    if (self->inUnreachableCode()) return;
     auto* curr = (*currp)->cast<GetLocal>();
     self->getSources[curr] = self->currSources[curr->index];
     self->locations[curr] = currp;
   }
 
   static void doVisitSetLocal(GetSetConnector* self, Expression** currp) {
+    if (self->inUnreachableCode()) return;
     auto* curr = (*currp)->cast<SetLocal>();
     self->currSources[curr->index] = self->note(new Source(curr));
     self->locations[curr] = currp;
@@ -267,6 +269,10 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
 
   void enterUnreachableCode() {
     std::fill(currSources.begin(), currSources.end(), nullptr);
+  }
+
+  bool inUnreachableCode() {
+    return currSources[0] == nullptr;
   }
 
   void flow() {
