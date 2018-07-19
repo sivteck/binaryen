@@ -32,6 +32,11 @@ namespace LocalGraphInternal {
 // at this point, and may contain both a bunch of sets and a bunch
 // of incoming Sources. We then flow values on the Source graph.
 // After doing so, each get has the sets in its Source.
+//
+// XXX
+// So far this seems slower, and takes a lot more memory. The memory
+// may be the larger issue.
+// XXX
 
 struct Source {
   std::unordered_set<SetLocal*> sets;
@@ -65,6 +70,9 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
   GetSetConnector(LocalGraph::GetSetses& getSetses, LocalGraph::Locations& locations, Function* func) : getSetses(getSetses), locations(locations) {
     numLocals = func->getNumLocals();
     if (numLocals == 0) return;
+#ifdef LOCAL_GRAPH_DEBUG
+    std::cout << "LocalGraph: start\n";
+#endif
     // Prepare to run
     setFunction(func);
     // Initial state: initial values (param or zero init) for all indexes
@@ -74,19 +82,24 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     }
     // Create the Source graph by walking the IR
 #ifdef LOCAL_GRAPH_DEBUG
-    std::cout << "LocalGraph: walk " << func->name << '\n';
+    std::cout << "LocalGraph:   walk " << func->name << '\n';
 #endif
     PostWalker<GetSetConnector>::doWalkFunction(func);
     // Flow the Sources across blocks
 #ifdef LOCAL_GRAPH_DEBUG
-    std::cout << "LocalGraph: flow\n";
+    std::cout << "LocalGraph:   flow\n";
 #endif
     flow();
     // Get the getSets from their Sources
 #ifdef LOCAL_GRAPH_DEBUG
-    std::cout << "LocalGraph: emit\n";
+    std::cout << "LocalGraph:   emit\n";
 #endif
     emitGetSetses();
+    // Finish up
+    allSources.clear(); // free this now, users of the object don't need it
+#ifdef LOCAL_GRAPH_DEBUG
+    std::cout << "LocalGraph: done\n";
+#endif
   }
 
   std::vector<std::unique_ptr<Source>> allSources;
@@ -332,7 +345,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
 LocalGraph::LocalGraph(Function* func) {
   LocalGraphInternal::GetSetConnector getSetConnector(getSetses, locations, func);
 
-#ifdef LOCAL_GRAPH_DEBUG
+#if 0 // LOCAL_GRAPH_DEBUG
   std::cout << "LocalGraph: dump\n";
   for (auto& pair : getSetses) {
     auto* get = pair.first;
