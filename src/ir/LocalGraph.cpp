@@ -46,15 +46,6 @@ struct Source {
   // TODO: add a 'used' flag, which is marked on the roots, the
   //       sources we saw had a get. Flow that out to see which are
   //       needed, can save a lot of work potentially?
-
-  // Called when we reuse a source, after we found it was not needed.
-  // It must have had an input but nothing else.
-  void clear() {
-    assert(sets.empty());
-    assert(inputs.size() == 1);
-    inputs.clear();
-    assert(outputs.empty());
-  }
 };
 
 struct GetSetConnector : public PostWalker<GetSetConnector> {
@@ -112,37 +103,15 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
   std::vector<Source*> availableSources;
 
   Source* newSource() {
-    // Allocate a new one if necessary, otherwise reuse
-    if (availableSources.empty()) {
-      auto* source = new Source();
-      allSources.push_back(std::unique_ptr<Source>(source));
-      return source;
-    } else {
-      auto* source = availableSources.back();
-      source->clear();
-      availableSources.pop_back();
-      return source;
-    }
+    auto* source = new Source();
+    allSources.push_back(std::unique_ptr<Source>(source));
+    return source;
   }
 
   Source* newSource(SetLocal* set) {
     auto* source = newSource();
     source->sets.insert(set);
     return source;
-  }
-
-  // After we know all inputs of a source have been received,
-  // and before the source could be used by a get, finalize() is called,
-  // which can then remove trivially unnecessary work: if the node
-  // has only a single input, we can be identical to that input, i
-  void finalize(Source*& source) {
-    if (!source) return;
-    if (source->inputs.size() == 1) {
-      availableSources.push_back(source);
-      auto* input = *source->inputs.begin();
-      assert(input != source);
-      source = input;
-    }
   }
 
   // Given a main source, add an input to it. One or both may
@@ -165,6 +134,8 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
   // Connect a name - a branch target - to relevant sources.
   std::unordered_map<Name, Sources> labelSources;
 
+  std::unordered_set<Name> loopLabels;
+
   // traversal work
 
   static void doPreVisitBlock(GetSetConnector* self, Expression** currp) {
@@ -181,21 +152,21 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     auto* curr = (*currp)->dynCast<Block>();
     if (!curr->name.is()) return;
     auto& sources = self->labelSources[curr->name];
+    // TODO: if no branches, just return here, flowing out currSources
+//    if (inUnreachableCode()) {
     // Add the data flowing out at the end.
     for (Index i = 0; i < self->numLocals; i++) {
-      // TODO: in all merges, may be trivial stuff we can optimize.
-      //       or maybe at the end, if a Source has just one input and
-      //       output, fuse them - compact the graph before flowing it.
-      //       that would also be the time to dce the graph
+      // Do the merge efficiently
       self->addInput(sources[i], self->currSources[i]);
       self->currSources[i] = sources[i];
-      self->finalize(self->currSources[i]);
     }
   }
 
   static void doPreVisitLoop(GetSetConnector* self, Expression** currp) {
     auto* curr = (*currp)->dynCast<Loop>();
     if (!curr->name.is()) return;
+    // Note this label is for a loop.
+    self->loopLabels.insert(curr->name);
     // Each branch we see will add a source to the loop's sources.
     auto& sources = self->labelSources[curr->name];
     sources.resize(self->numLocals);
@@ -231,7 +202,6 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
       self->addInput(source, sources[i]);
       self->addInput(source, self->currSources[i]);
       self->currSources[i] = source;
-      self->finalize(self->currSources[i]);
     }
     self->ifStack.pop_back();
   }
@@ -321,8 +291,12 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     std::fill(currSources.begin(), currSources.end(), nullptr);
   }
 
+  bool inUnreachableCode(Sources& sources) {
+    return sources[0] == nullptr;
+  }
+
   bool inUnreachableCode() {
-    return currSources[0] == nullptr;
+    return inUnreachableCode(currSources);
   }
 
   void flow() {
