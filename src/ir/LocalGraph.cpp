@@ -47,10 +47,13 @@ struct Source {
   //       sources we saw had a get. Flow that out to see which are
   //       needed, can save a lot of work potentially?
 
-  Source() {}
-
-  Source(SetLocal* set) {
-    sets.insert(set);
+  // Called when we reuse a source, after we found it was not needed.
+  // It must have had an input but nothing else.
+  void clear() {
+    assert(sets.empty());
+    assert(inputs.size() == 1);
+    inputs.clear();
+    assert(outputs.empty());
   }
 };
 
@@ -78,7 +81,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     // Initial state: initial values (param or zero init) for all indexes
     currSources.resize(numLocals);
     for (Index i = 0; i < numLocals; i++) {
-      currSources[i] = note(new Source(nullptr));
+      currSources[i] = newSource(nullptr);
     }
     // Create the Source graph by walking the IR
 #ifdef LOCAL_GRAPH_DEBUG
@@ -102,12 +105,44 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
 #endif
   }
 
+  // All sources ever created.
   std::vector<std::unique_ptr<Source>> allSources;
 
-  Source* note(Source* source) {
-    assert(source);
-    allSources.push_back(std::unique_ptr<Source>(source));
+  // Sources that are free for use.
+  std::vector<Source*> availableSources;
+
+  Source* newSource() {
+    // Allocate a new one if necessary, otherwise reuse
+    if (availableSources.empty()) {
+      auto* source = new Source();
+      allSources.push_back(std::unique_ptr<Source>(source));
+      return source;
+    } else {
+      auto* source = availableSources.back();
+      source->clear();
+      availableSources.pop_back();
+      return source;
+    }
+  }
+
+  Source* newSource(SetLocal* set) {
+    auto* source = newSource();
+    source->sets.insert(set);
     return source;
+  }
+
+  // After we know all inputs of a source have been received,
+  // and before the source could be used by a get, finalize() is called,
+  // which can then remove trivially unnecessary work: if the node
+  // has only a single input, we can be identical to that input, i
+  void finalize(Source*& source) {
+    if (!source) return;
+    if (source->inputs.size() == 1) {
+      availableSources.push_back(source);
+      auto* input = *source->inputs.begin();
+      assert(input != source);
+      source = input;
+    }
   }
 
   // Given a main source, add an input to it. One or both may
@@ -118,7 +153,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
       return;
     }
     if (!main) {
-      main = note(new Source());
+      main = newSource();
     }
     main->inputs.insert(input);
     input->outputs.insert(main);
@@ -154,6 +189,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
       //       that would also be the time to dce the graph
       self->addInput(sources[i], self->currSources[i]);
       self->currSources[i] = sources[i];
+      self->finalize(self->currSources[i]);
     }
   }
 
@@ -195,6 +231,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
       self->addInput(source, sources[i]);
       self->addInput(source, self->currSources[i]);
       self->currSources[i] = source;
+      self->finalize(self->currSources[i]);
     }
     self->ifStack.pop_back();
   }
@@ -209,7 +246,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
   static void doVisitSetLocal(GetSetConnector* self, Expression** currp) {
     if (self->inUnreachableCode()) return;
     auto* curr = (*currp)->cast<SetLocal>();
-    self->currSources[curr->index] = self->note(new Source(curr));
+    self->currSources[curr->index] = self->newSource(curr);
     self->locations[curr] = currp;
   }
 
