@@ -150,35 +150,35 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     auto* curr = (*currp)->dynCast<Block>();
     if (!curr->name.is()) return;
     auto& sources = self->labelSources[curr->name];
-    if (inUnreachableCode(sources)) {
+    if (self->inUnreachableCode(sources)) {
       // No branches to here, just flow out currSources
       return;
     }
-    if (inUnreachableCode()) {
+    if (self->inUnreachableCode()) {
       // Only the branches exist, copy them.
-      currSources = sources;
+      self->currSources = sources;
       // Clear possible merges that may have happened due to branches
-      for (auto* source : currSources) {
+      for (auto* source : self->currSources) {
         source->possibleMerge = false;
       }
       return;
     }
     // We need to merge the branches with the flow, as both exist.
-    for (Index i = 0; i < numLocals; i++) {
+    for (Index i = 0; i < self->numLocals; i++) {
       auto* branches = sources[i];
-      auto* flow = currSources[i];
+      auto* flow = self->currSources[i];
       if (branches != flow) {
         // There is something to combine here
         if (branches->possibleMerge) {
           // We need an actual merge.
           branches->possibleMerge = false;
-          auto* merge = newSource();
-          connectInput(merge, branches);
-          connectInput(merge, flow);
-          currSources[i] = merge;
+          auto* merge = self->newSource();
+          self->connectInput(merge, branches);
+          self->connectInput(merge, flow);
+          self->currSources[i] = merge;
         } else {
           // The branches is already a merge, add to that.
-          connectInput(merge, flow);
+          self->connectInput(branches, flow);
         }
       } else {
         branches->possibleMerge = false;
@@ -198,7 +198,7 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     // flowing in, and branches will add further sources later. For
     // loops, unlike other things, we create a merge Source eagerly.
     for (Index i = 0; i < self->numLocals; i++) {
-      Source* source = newSource();
+      Source* source = self->newSource();
       self->connectInput(source, self->currSources[i]);
       sources[i] = self->currSources[i] = source;
     }
@@ -222,25 +222,25 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     // if body, and if there is an else, it contains the if true's
     // output.
     auto& sources = self->ifStack.back();
-    if (inUnreachableCode(sources)) {
+    if (self->inUnreachableCode(sources)) {
       // No previous sources to merge, just flow out currSources
       return;
     }
-    if (inUnreachableCode()) {
+    if (self->inUnreachableCode()) {
       // Just copy the other arm.
-      currSources = sources;
+      self->currSources = sources;
       return;
     }
     // We have two things to merge.
-    for (Index i = 0; i < numLocals; i++) {
+    for (Index i = 0; i < self->numLocals; i++) {
       auto* previous = sources[i];
-      auto* flow = currSources[i];
+      auto* flow = self->currSources[i];
       if (previous != flow) {
         // We need a merge.
-        auto* merge = newSource();
-        connectInput(merge, previous);
-        connectInput(merge, flow);
-        currSources[i] = merge;
+        auto* merge = self->newSource();
+        self->connectInput(merge, previous);
+        self->connectInput(merge, flow);
+        self->currSources[i] = merge;
       }
     }
     self->ifStack.pop_back();
