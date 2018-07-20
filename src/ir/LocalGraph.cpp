@@ -43,6 +43,14 @@ struct Source {
   std::unordered_set<Source*> inputs;
   std::unordered_set<Source*> outputs;
 
+  // For blocks, we start out with the block output having a nullptr,
+  // as nothing may reach there (no branches and no flow). When we
+  // see the first branch, we add it with possibleMerge set to true.
+  // If we see another branch, or later the flow, and they are not
+  // identical to what's already there, we create a merge source.
+  // In all cases we remove possibleMerge when the block is done.
+  bool possibleMerge = false;
+
   // TODO: add a 'used' flag, which is marked on the roots, the
   //       sources we saw had a get. Flow that out to see which are
   //       needed, can save a lot of work potentially?
@@ -114,20 +122,6 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     return source;
   }
 
-  // Given a main source, add an input to it. One or both may
-  // be unreachable (nullptrs). If main is unreachable but not
-  // the input, we create main so that we can connect them.
-  void addInput(Source*& main, Source* input) {
-    if (!input) {
-      return;
-    }
-    if (!main) {
-      main = newSource();
-    }
-    main->inputs.insert(input);
-    input->outputs.insert(main);
-  }
-
   // Connect a get to its Source
   std::unordered_map<GetLocal*, Source*> getSources;
 
@@ -135,6 +129,10 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
   std::unordered_map<Name, Sources> labelSources;
 
   std::unordered_set<Name> loopLabels;
+
+  bool isLoopLabel(Name name) {
+    return loopLabels.count(name) > 0;
+  }
 
   // traversal work
 
@@ -152,13 +150,39 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     auto* curr = (*currp)->dynCast<Block>();
     if (!curr->name.is()) return;
     auto& sources = self->labelSources[curr->name];
-    // TODO: if no branches, just return here, flowing out currSources
-//    if (inUnreachableCode()) {
-    // Add the data flowing out at the end.
-    for (Index i = 0; i < self->numLocals; i++) {
-      // Do the merge efficiently
-      self->addInput(sources[i], self->currSources[i]);
-      self->currSources[i] = sources[i];
+    if (inUnreachableCode(sources)) {
+      // No branches to here, just flow out currSources
+      return;
+    }
+    if (inUnreachableCode()) {
+      // Only the branches exist, copy them.
+      currSources = sources;
+      // Clear possible merges that may have happened due to branches
+      for (auto* source : currSources) {
+        source->possibleMerge = false;
+      }
+      return;
+    }
+    // We need to merge the branches with the flow, as both exist.
+    for (Index i = 0; i < numLocals; i++) {
+      auto* branches = sources[i];
+      auto* flow = currSources[i];
+      if (branches != flow) {
+        // There is something to combine here
+        if (branches->possibleMerge) {
+          // We need an actual merge.
+          branches->possibleMerge = false;
+          auto* merge = newSource();
+          connectInput(merge, branches);
+          connectInput(merge, flow);
+          currSources[i] = merge;
+        } else {
+          // The branches is already a merge, add to that.
+          connectInput(merge, flow);
+        }
+      } else {
+        branches->possibleMerge = false;
+      }
     }
   }
 
@@ -171,10 +195,11 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     auto& sources = self->labelSources[curr->name];
     sources.resize(self->numLocals);
     // Prepare merge Sources for all indexes. We start with the input
-    // flowing in, and branches will add further sources later.
+    // flowing in, and branches will add further sources later. For
+    // loops, unlike other things, we create a merge Source eagerly.
     for (Index i = 0; i < self->numLocals; i++) {
-      Source* source = nullptr; // we may not need one
-      self->addInput(source, self->currSources[i]);
+      Source* source = newSource();
+      self->connectInput(source, self->currSources[i]);
       sources[i] = self->currSources[i] = source;
     }
   }
@@ -197,11 +222,26 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     // if body, and if there is an else, it contains the if true's
     // output.
     auto& sources = self->ifStack.back();
-    for (Index i = 0; i < self->numLocals; i++) {
-      Source* source = nullptr; // we may not need one
-      self->addInput(source, sources[i]);
-      self->addInput(source, self->currSources[i]);
-      self->currSources[i] = source;
+    if (inUnreachableCode(sources)) {
+      // No previous sources to merge, just flow out currSources
+      return;
+    }
+    if (inUnreachableCode()) {
+      // Just copy the other arm.
+      currSources = sources;
+      return;
+    }
+    // We have two things to merge.
+    for (Index i = 0; i < numLocals; i++) {
+      auto* previous = sources[i];
+      auto* flow = currSources[i];
+      if (previous != flow) {
+        // We need a merge.
+        auto* merge = newSource();
+        connectInput(merge, previous);
+        connectInput(merge, flow);
+        currSources[i] = merge;
+      }
     }
     self->ifStack.pop_back();
   }
@@ -257,10 +297,61 @@ struct GetSetConnector : public PostWalker<GetSetConnector> {
     }
   }
 
+  void connectInput(Source* main, Source* input) {
+    assert(main);
+    assert(input);
+    main->inputs.insert(input);
+    input->outputs.insert(main);
+  }
+
+  void connectPossibleInput(Source* main, Source* input) {
+    if (!input) return;
+    connectInput(main, input);
+  }
+
   void handleBranch(Name name) {
+    if (inUnreachableCode()) return;
+    // From here on, we can assume currSources are not nullptr
     auto& sources = labelSources[name];
-    for (Index i = 0; i < numLocals; i++) {
-      addInput(sources[i], currSources[i]);
+    if (isLoopLabel(name)) {
+      // Merge source was created eagerly, just connect
+      for (Index i = 0; i < numLocals; i++) {
+        connectInput(sources[i], currSources[i]);
+      }
+    } else {
+      // For a block, we start with nullptr as there may not be
+      // anything flowing out of the block at all.
+      if (inUnreachableCode(sources)) {
+        // This is the first branch reaching this block. Just
+        // copy the current sources. We'll create a merge
+        // later if necessary, knowing we need that thanks to
+        // the possibleMerge flag.
+        sources = currSources;
+        for (auto* source : sources) {
+          assert(!source->possibleMerge);
+          source->possibleMerge = true;
+        }
+      } else {
+        // There were already branches to here.
+        for (Index i = 0; i < numLocals; i++) {
+          auto* branches = sources[i];
+          auto* curr = currSources[i];
+          if (branches != curr) {
+            // There is something to combine here.
+            if (branches->possibleMerge) {
+              // We need an actual merge.
+              branches->possibleMerge = false;
+              auto* merge = newSource();
+              connectInput(merge, branches);
+              connectInput(merge, curr);
+              sources[i] = merge;
+            } else {
+              // The branches are already a merge, add to that.
+              connectInput(branches, curr);
+            }
+          }
+        }
+      }
     }
   }
 
