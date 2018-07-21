@@ -21,12 +21,12 @@ jobs:
       env: ARCH=aarch64
       before_install:
         - docker run --rm --privileged multiarch/qemu-user-static:register --reset
-          #- docker run --w /src --name alpine -v $(pwd):/src -dit --rm multiarch/alpine:aarch64-latest-stable
-        - docker run -w /src -dit --name alpine -v $(pwd):/src arm64v8/node:10-alpine
+        - docker run --w /src --name alpine -v $(pwd):/src -dit --rm multiarch/alpine:aarch64-latest-stable
+          #- docker run -w /src -dit --name alpine -v $(pwd):/src arm64v8/node:10-alpine
         - alpine() { docker exec -it alpine "$@"; }
       install:
         - alpine apk update
-        - alpine apk add build-base cmake git python2
+        - alpine apk add nodejs-current build-base cmake git python2
       script:
         - alpine cmake .
         - alpine make -j2
