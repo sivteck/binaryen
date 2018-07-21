@@ -21,8 +21,8 @@ jobs:
       env: ARCH=aarch64
       before_install:
         - docker run --rm --privileged multiarch/qemu-user-static:register --reset
-        - docker run -w /src -dit --name alpine -v $(pwd):/src node:10-alpine --rm multiarch/alpine:aarch64-latest-stable /bin/sh
-          #        - docker run -w /src -dit --name alpine -v $(pwd):/src node:10-alpine
+        - docker run -it --rm multiarch/alpine:aarch64-latest-stable /bin/sh
+        - docker run -w /src -dit --name alpine -v $(pwd):/src node:10-alpine
         - alpine() { docker exec -it alpine "$@"; }
       install:
         - alpine apk update
