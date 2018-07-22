@@ -18,7 +18,10 @@ jobs:
       sudo: true
       language: minimal
       compiler: gcc
+      os:
+        - linux-aarch64
       env: ARCH=aarch64
+        
       before_install:
         - docker run --rm --privileged multiarch/qemu-user-static:register --reset
         - docker run -w /src --name alpine -v $(pwd):/src -dit --rm multiarch/alpine:aarch64-latest-stable
